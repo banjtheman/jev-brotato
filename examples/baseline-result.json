@@ -1,0 +1,32 @@
+{
+  "outcome": "gameover",
+  "wave_reached": 10,
+  "wall_duration_seconds": 503.209,
+  "requests": 1517,
+  "applied_actions": 1501,
+  "input_tokens": 2196540,
+  "output_tokens": 101004,
+  "estimated_cost_usd": 0.09225468,
+  "unknown_usage_requests": 0,
+  "api_errors": 4,
+  "expired_decisions": 2,
+  "rejected_actions": 10,
+  "frames": 1993,
+  "median_latency_ms": 243.7,
+  "p95_latency_ms": 359.7,
+  "date": "2026-09-22",
+  "model": "jev-1.13.0",
+  "game_version": "1.1.15.4",
+  "character": "Well-Rounded",
+  "starting_weapon": "SMG",
+  "difficulty": 0,
+  "waves_cleared": 9,
+  "price_usd_per_million_input_tokens": 0.042,
+  "price_source": "https://docs.typesafe.ai/models",
+  "notes": [
+    "One observed run, not a win-rate estimate.",
+    "Wall duration includes approximately 59.4 seconds of manual setup.",
+    "Costs are estimates from reported usage, not an invoice.",
+    "Full frame captures and decision logs are not bundled."
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "BrotatoBridge",
+  "namespace": "Jev",
+  "version_number": "0.1.0",
+  "description": "Local game state, bounded movement, menu actions and recording for a Jev agent.",
+  "website_url": "https://github.com/banjtheman/jev-brotato",
+  "dependencies": [],
+  "extra": {
+    "godot": {
+      "authors": ["Jev Games"],
+      "incompatibilities": [],
+      "compatible_mod_loader_version": ["6.2.3"],
+      "compatible_game_version": ["1.1.15.4"],
+      "config_defaults": {}
+    }
+  }
+}

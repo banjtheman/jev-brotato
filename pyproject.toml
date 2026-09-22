@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jev-brotato"
+version = "0.1.0"
+description = "Jev gameplay agent, local Brotato bridge and recorded experiments"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [{name = "banjtheman"}]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+video = ["Pillow>=10.1"]
+
+[project.urls]
+Homepage = "https://github.com/banjtheman/jev-brotato"
+Repository = "https://github.com/banjtheman/jev-brotato"
+Issues = "https://github.com/banjtheman/jev-brotato/issues"
+
+[project.scripts]
+jev-brotato = "brotato_agent.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["brotato_agent*"]
