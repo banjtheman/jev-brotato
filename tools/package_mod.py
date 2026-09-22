@@ -22,12 +22,16 @@ def main(argv=None):
     if args.install and not args.standalone:
         parser.error("Steam builds filter local Workshop mods; use tools/launch_brotato.py. Non-Steam installs require --standalone.")
     source = ROOT/"mods-unpacked"/MOD_ID
+    license_path = ROOT/"LICENSE"
+    if not license_path.is_file():
+        parser.error("Missing LICENSE; use a complete source checkout")
     for required in ("manifest.json", "mod_main.gd", "menus.gd", "recorder.gd", "extensions/player_movement_behavior.gd"):
         if not (source/required).is_file():
             parser.error(f"Missing mod file: {required}")
     destination = ROOT/"dist"/(MOD_ID+".zip")
     destination.parent.mkdir(exist_ok=True)
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as package:
+        package.write(license_path, Path("mods-unpacked")/MOD_ID/"LICENSE")
         for path in sorted(source.rglob("*")):
             if path.is_file() and path.suffix in (".gd", ".json", ".md"):
                 package.write(path, path.relative_to(ROOT))
