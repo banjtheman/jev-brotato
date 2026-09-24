@@ -8,7 +8,7 @@ If a coding agent will help with the integration, give it the [TypeSafe AI skill
 npx skills add https://github.com/typesafe-ai/skills --skill typesafe-ai
 ```
 
-This installer requires Node.js/`npx`; Python gameplay does not. Live Jev requests require your own `JEV_KEY`. Offline checks need neither that key nor a running game.
+This installer requires Node.js/`npx`; Python gameplay does not. Live Jev requests require your own `TYPESAFE_API_KEY`. Offline checks need neither that key nor a running game.
 
 ## Install the harness
 
@@ -40,7 +40,7 @@ The offline doctor checks the source/Python setup and skips game/key requirement
 Create `.env` from `.env.example` if it does not already exist, then edit the file locally:
 
 ```dotenv
-JEV_KEY=your_key_here
+TYPESAFE_API_KEY=your_key_here
 ```
 
 Never paste the real key into an agent conversation or issue. Do not print the file when checking configuration. Existing environment variables take precedence over `.env`; the file is not executed as a shell script. For another file, put the global option before the command: `python -m brotato_agent --env /path/to/private.env demo --live`.
@@ -145,7 +145,7 @@ The `jev-latest` alias can resolve to a new model over time. Record the returned
 | Port 4243 unavailable | Close another bridged game. Only one game listener and one controller client are expected. |
 | Standalone observation cannot connect | Stop the active runner first; the bridge accepts one client at a time. |
 | Agent waits at a menu | Character/weapon/difficulty selection and pauses are manual. Select setup and start before the 120-second no-action timeout. |
-| Authentication failure | Verify `JEV_KEY` locally and check for an overriding environment variable. Do not share the key. |
+| Authentication failure | Verify `TYPESAFE_API_KEY` (or `JEV_KEY`) locally and check for an overriding environment variable. Do not share the key. |
 | Expired decisions | Inspect actual latency in the log; stale combat actions are intentionally discarded. |
 | Missing frames / failed recording | Inspect the session summary and game log. Keep the game window available; do not label missing footage as recorded play. |
 | Renderer cannot import PIL | Activate the correct environment and install `python -m pip install -e '.[video]'`. |

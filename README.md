@@ -8,7 +8,7 @@ You choose the character, starting weapon and difficulty. The agent handles move
 
 ## TypeSafe skill and API key
 
-For live model decisions, you need **`JEV_KEY`** in your local `.env`. The offline demo and tests do not need a key.
+For live model decisions, you need **`TYPESAFE_API_KEY`** in your local `.env` (the older `JEV_KEY` name also works). The offline demo and tests do not need a key.
 
 When using a coding agent to set up or change the integration, install the [TypeSafe AI skill](https://www.skills.sh/typesafe-ai/skills/typesafe-ai):
 
@@ -35,7 +35,7 @@ python -m unittest discover -s tests -v
 
 Use your Python 3.10+ executable for the virtual-environment creation command. After activation, every `python` command uses that environment. The demo and tests above make no API calls and need no running game.
 
-The repository includes only a placeholder `.env.example`. Copy it to `.env`, then edit the new file locally to set `JEV_KEY`. Keep the key out of chat, screenshots and commits. `.env` is ignored by Git. Check the local game/key configuration without an API call, then test the connection with one real, billable request:
+The repository includes only a placeholder `.env.example`. Copy it to `.env`, then edit the new file locally to set `TYPESAFE_API_KEY`. Keep the key out of chat, screenshots and commits. `.env` is ignored by Git. Check the local game/key configuration without an API call, then test the connection with one real, billable request:
 
 ```bash
 python tools/doctor.py

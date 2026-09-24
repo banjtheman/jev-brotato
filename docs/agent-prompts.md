@@ -8,9 +8,9 @@ First install the [TypeSafe AI skill](https://www.skills.sh/typesafe-ai/skills/t
 npx skills add https://github.com/typesafe-ai/skills --skill typesafe-ai
 ```
 
-Node.js/`npx` is needed for skill installation only. The harness itself runs in Python. A **`JEV_KEY` is required for live model calls**, while offline tests and the offline demo need no key.
+Node.js/`npx` is needed for skill installation only. The harness itself runs in Python. A **`TYPESAFE_API_KEY` is required for live model calls**, while offline tests and the offline demo need no key.
 
-Use a local `.env` for `JEV_KEY`. Never paste the key into the conversation. Each live experiment below states an explicit budget; adjust it before sending the prompt if you want a different limit.
+Use a local `.env` for `TYPESAFE_API_KEY`. Never paste the key into the conversation. Each live experiment below states an explicit budget; adjust it before sending the prompt if you want a different limit.
 
 ## Set up and test offline
 
@@ -45,7 +45,7 @@ typesafe-ai skill and read the setup guide and current CLI first.
 I authorize one live credential-check request,
 then one recorded run capped at 2400 seconds, 6000 requests and $0.50 in
 estimated known input-token cost. Do not increase these limits or retry a
-lost run automatically. Never reveal JEV_KEY.
+lost run automatically. Never reveal the API key.
 
 Launch the bridged game, wait for the title screen, then start the runner
 with a fresh session name before I begin wave 1. Tell me when to select my

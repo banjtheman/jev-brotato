@@ -7,6 +7,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT = Path.home()/"Library/Application Support/Steam/steamapps/common/Brotato/Brotato.app/Contents/MacOS/Brotato"
+# API key variables, matching brotato_agent.jev.KEY_NAMES; never passed to the game.
+KEY_NAMES = ("TYPESAFE_API_KEY", "JEV_KEY")
 
 
 def resolve_executable(value):
@@ -28,8 +30,7 @@ def main(argv=None):
     if not (ROOT/"tools/launch_brotato.gd").is_file():
         parser.error("Missing tools/launch_brotato.gd; run from a complete source checkout")
     subprocess.run([sys.executable, str(ROOT/"tools/package_mod.py")], check=True)
-    env = os.environ.copy()
-    env.pop("JEV_KEY", None)
+    env = {key: value for key, value in os.environ.items() if key not in KEY_NAMES}
     env.update(SteamAppId="1942280", SteamGameId="1942280",
                JEV_BRIDGE_ZIP=str(ROOT/"dist/Jev-BrotatoBridge.zip"),
                JEV_RECORDING_ROOT=str(ROOT/"recordings"),

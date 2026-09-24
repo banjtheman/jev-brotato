@@ -107,7 +107,7 @@ def main():
     commands.add_parser("observe", help="Print one live game snapshot; no API call")
     commands.add_parser("release", help="Release movement control")
     demo = commands.add_parser("demo", help="Choose a move for a synthetic state")
-    demo.add_argument("--live", action="store_true", help="Make one real Jev request using JEV_KEY")
+    demo.add_argument("--live", action="store_true", help="Make one real Jev request using TYPESAFE_API_KEY or JEV_KEY")
     run = commands.add_parser("play", help="Play combat; start a run manually in Brotato")
     run.add_argument("--seconds", type=float, default=60)
     run.add_argument("--max-calls", type=int, default=120)

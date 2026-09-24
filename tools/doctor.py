@@ -13,9 +13,9 @@ import shutil
 import sys
 
 if __package__:
-    from .launch_brotato import DEFAULT, ROOT, resolve_executable
+    from .launch_brotato import DEFAULT, KEY_NAMES, ROOT, resolve_executable
 else:
-    from launch_brotato import DEFAULT, ROOT, resolve_executable
+    from launch_brotato import DEFAULT, KEY_NAMES, ROOT, resolve_executable
 
 
 @dataclass(frozen=True)
@@ -41,17 +41,18 @@ SOURCE_FILES = (
 )
 
 
-def _dotenv_key(path):
+def _dotenv_keys(path):
     """Read the agent's simple .env format without setting process variables.
 
     Match load_env's quoting/comment rules. Parse every assignment so malformed
-    files fail here as they do in the agent. Never include file contents in errors.
+    files fail here as they do in the agent. Return only KEY_NAMES entries, and
+    never include file contents in errors.
     """
     try:
         content = Path(path).read_text(encoding="utf-8-sig")
     except FileNotFoundError:
-        return ""
-    key = ""
+        return {}
+    keys = {}
     for raw in content.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -69,25 +70,34 @@ def _dotenv_key(path):
             value = re.split(r"\s+#", value, maxsplit=1)[0].rstrip()
         if "\x00" in value:
             raise ValueError("Invalid environment file")
-        if name == "JEV_KEY":
-            key = value
-    return key
+        if name in KEY_NAMES:
+            keys[name] = value
+    return keys
 
 
 def check_key(env_path, environ=None):
-    """Return only configuration status; never return credentials or snippets."""
+    """Return only configuration status; never return credentials or snippets.
+
+    Resolve the key as the agent does: per name, an environment variable (even an
+    empty one) wins over the .env file, and the first nonempty name in KEY_NAMES is used.
+    """
     environ = os.environ if environ is None else environ
     try:
-        file_key = _dotenv_key(env_path)
+        file_keys = _dotenv_keys(env_path)
     except (OSError, UnicodeError, ValueError):
-        return Check("FAIL", "JEV_KEY", "Environment file is unreadable or malformed; no values displayed.")
-    key = environ.get("JEV_KEY", file_key).strip()
+        return Check("FAIL", "API key", "Environment file is unreadable or malformed; no values displayed.")
+    name = key = source = ""
+    for candidate in KEY_NAMES:
+        value = environ.get(candidate, file_keys.get(candidate, "")).strip()
+        if value:
+            name, key = candidate, value
+            source = "environment" if candidate in environ else ".env file"
+            break
     if not key or key == "your_typesafe_api_key":
-        return Check("FAIL", "JEV_KEY", "Not configured; set JEV_KEY in the environment or your .env file.")
+        return Check("FAIL", "API key", "Not configured; set TYPESAFE_API_KEY in the environment or your .env file.")
     if any(ord(char) < 33 or ord(char) > 126 for char in key):
-        return Check("FAIL", "JEV_KEY", "Configured value must be one printable ASCII token.")
-    source = "environment" if "JEV_KEY" in environ else ".env file"
-    return Check("OK", "JEV_KEY", f"Configured via {source}; value hidden and authentication not tested.")
+        return Check("FAIL", "API key", f"{name} must be one printable ASCII token.")
+    return Check("OK", "API key", f"{name} configured via {source}; value hidden and authentication not tested.")
 
 
 def collect_checks(*, root=ROOT, executable=DEFAULT, env_path=None, offline=False):
@@ -100,7 +110,7 @@ def collect_checks(*, root=ROOT, executable=DEFAULT, env_path=None, offline=Fals
                         "Missing: " + ", ".join(missing) if missing else "Required Python, launcher and mod files are present."))
     if offline:
         checks.extend((Check("SKIP", "Brotato", "Offline mode; game installation not required."),
-                       Check("SKIP", "JEV_KEY", "Offline mode; credentials not read or required.")))
+                       Check("SKIP", "API key", "Offline mode; credentials not read or required.")))
     else:
         game = resolve_executable(executable)
         if not game.is_file():

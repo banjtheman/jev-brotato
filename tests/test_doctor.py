@@ -34,6 +34,22 @@ class DoctorTests(unittest.TestCase):
             self.assertIn("via environment", result.detail)
             self.assertNotIn("environment-secret", repr(result))
 
+    def test_resolves_names_in_the_same_order_as_the_agent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = Path(directory)/".env"
+            env.write_text("TYPESAFE_API_KEY=typesafe-secret\nJEV_KEY=legacy-secret\n")
+            result = doctor.check_key(env, {})
+            self.assertEqual(result.status, "OK")
+            self.assertIn("TYPESAFE_API_KEY configured via .env file", result.detail)
+            self.assertNotIn("secret", repr(result))
+            # Like the client, an empty preferred name falls back to JEV_KEY.
+            result = doctor.check_key(env, {"TYPESAFE_API_KEY": ""})
+            self.assertEqual(result.status, "OK")
+            self.assertIn("JEV_KEY configured via .env file", result.detail)
+            # A placeholder under the preferred name is what the client would send.
+            env.write_text("TYPESAFE_API_KEY=your_typesafe_api_key\nJEV_KEY=legacy-secret\n")
+            self.assertEqual(doctor.check_key(env, {}).status, "FAIL")
+
     def test_missing_placeholder_and_malformed_values_are_safe(self):
         with tempfile.TemporaryDirectory() as directory:
             env = Path(directory)/".env"
@@ -65,7 +81,7 @@ class DoctorTests(unittest.TestCase):
     def test_offline_skips_game_and_does_not_read_credentials(self):
         with patch.object(doctor, "check_key", side_effect=AssertionError("Must not read key")):
             checks = doctor.collect_checks(offline=True, executable="/no-game-installed")
-        self.assertEqual({c.name for c in checks if c.status == "SKIP"}, {"Brotato", "JEV_KEY"})
+        self.assertEqual({c.name for c in checks if c.status == "SKIP"}, {"Brotato", "API key"})
         self.assertFalse(any(c.status == "FAIL" for c in checks))
 
     def test_missing_source_is_a_failure_even_offline(self):
