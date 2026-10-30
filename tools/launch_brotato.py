@@ -21,6 +21,9 @@ def main(argv=None):
     parser.add_argument("--executable", type=Path, default=DEFAULT,
                         help="Brotato executable (default: macOS Steam installation)")
     parser.add_argument("--check", action="store_true", help="Load/compile the mod, then quit")
+    parser.add_argument("--native-rerolls", action="store_true",
+                        help="Use the game's own reroll limits instead of the 2-shop / 1-upgrade quota per wave")
+    parser.add_argument("--mute", action="store_true", help="No sound: start the game with Godot's dummy audio driver")
     args = parser.parse_args(argv)
     args.executable = resolve_executable(args.executable)
     if not args.executable.is_file():
@@ -34,9 +37,12 @@ def main(argv=None):
     env.update(SteamAppId="1942280", SteamGameId="1942280",
                JEV_BRIDGE_ZIP=str(ROOT/"dist/Jev-BrotatoBridge.zip"),
                JEV_RECORDING_ROOT=str(ROOT/"recordings"),
+               JEV_BRIDGE_NATIVE_REROLLS="1" if args.native_rerolls else "0",
                JEV_BRIDGE_CHECK_ONLY="1" if args.check else "0")
     cmd = [str(args.executable), "--script", str(ROOT/"tools/launch_brotato.gd")]
     cmd += ["--no-window", "--audio-driver", "Dummy"] if args.check else ["--windowed", "--resolution", "1280x720"]
+    if args.mute and not args.check:
+        cmd += ["--audio-driver", "Dummy"]
     return subprocess.call(cmd, env=env, cwd=args.executable.parent)
 
 

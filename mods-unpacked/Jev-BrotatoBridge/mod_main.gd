@@ -22,6 +22,7 @@ var _scene_id = 0
 var _property_cache = {}
 var _menus = null
 var _last_menu_fingerprint = ""
+var _birth_nodes = {}
 
 func _init():
 	ModLoaderMod.install_script_extension(
@@ -29,6 +30,9 @@ func _init():
 
 func _ready():
 	pause_mode = Node.PAUSE_MODE_PROCESS
+	get_tree().connect("node_added", self, "_track_birth")
+	get_tree().connect("node_removed", self, "_untrack_birth")
+	_seed_birth_nodes(get_tree().root)
 	_menus = load("res://mods-unpacked/Jev-BrotatoBridge/menus.gd").new()
 	_menus.name = "Menus"
 	add_child(_menus)
@@ -56,7 +60,11 @@ func _process(_delta):
 	if current_id != _scene_id:
 		_scene_id = current_id
 		_invalidate_observation()
-	if _phase(scene, _player(scene)) != "combat" or OS.get_ticks_msec() >= _move_expires_ms:
+	var current_phase = _phase(scene, _player(scene))
+	# Track new games even while no benchmark controller is connected.
+	if _menus != null:
+		_menus.observe_run_boundary(current_phase, RunData.current_wave, current_id)
+	if current_phase != "combat" or OS.get_ticks_msec() >= _move_expires_ms:
 		_release()
 	if _client != null and _client.get_status() != StreamPeerTCP.STATUS_CONNECTED:
 		_disconnect_client()
@@ -210,6 +218,7 @@ func _observe():
 	_last_menu_fingerprint = menu.fingerprint
 	var state = {
 		"protocol_version": 2, "seq": _sequence, "phase": phase,
+		"menu_observation_version": "build-obs-v4",
 		"terminal": phase in ["gameover", "victory"],
 		"menu": menu, "build": _menus.build_state(),
 		"scene": scene.filename if is_instance_valid(scene) else "",
@@ -230,14 +239,22 @@ func _observe():
 	if spawner == null:
 		spawner = _read(player, "_entity_spawner_ref")
 	var enemies = _read(spawner, "enemies", []).duplicate()
+	var boss_ids = {}
 	for boss in _read(spawner, "bosses", []):
+		if is_instance_valid(boss):
+			boss_ids[boss.get_instance_id()] = true
 		if not enemies.has(boss):
 			enemies.append(boss)
 	state["enemy_count"] = enemies.size()
-	state.enemies = _nearest_entities(enemies, origin, 128)
-	state.projectiles = _nearest_entities(_nodes(_read(scene, "_enemy_projectiles", [])), origin, 128)
+	state.enemies = _nearest_entities(enemies, origin, 128, "enemy", boss_ids)
+	state.projectiles = _nearest_entities(_nodes(_read(scene, "_enemy_projectiles", [])), origin, 128, "projectile")
 	state.materials = _nearest_entities(_nodes(_read(scene, "_materials_container")), origin, 64)
-	state.consumables = _nearest_entities(_nodes(_read(scene, "_consumables_container")), origin, 32)
+	state.consumables = _nearest_entities(_nodes(_read(scene, "_consumables_container")), origin, 32, "consumable")
+	# Active births are the spawn markers already present in the arena. Do not
+	# inspect the queued wave schedule or enemies that have not been announced.
+	state["combat_observation_version"] = "combat-obs-v2"
+	state["spawn_markers"] = _nearest_entities(_visible_birth_nodes(), origin, 32, "birth")
+	state["spawn_marker_source"] = "visible_scene_tree_birth_nodes"
 	var min_pos = _read(player, "_min_pos")
 	var max_pos = _read(player, "_max_pos")
 	if typeof(min_pos) == TYPE_VECTOR2 and typeof(max_pos) == TYPE_VECTOR2 and max_pos.x > min_pos.x and max_pos.y > min_pos.y:
@@ -266,7 +283,32 @@ func _nodes(value):
 		return value.get_children()
 	return []
 
-func _nearest_entities(nodes, origin, limit):
+func _track_birth(node):
+	if node is Node2D and node.filename == "res://entities/birth/entity_birth.tscn":
+		_birth_nodes[node.get_instance_id()] = weakref(node)
+
+func _untrack_birth(node):
+	_birth_nodes.erase(node.get_instance_id())
+
+func _seed_birth_nodes(node):
+	_track_birth(node)
+	for child in node.get_children():
+		_seed_birth_nodes(child)
+
+func _visible_birth_nodes():
+	var result = []
+	for id in _birth_nodes.keys():
+		var node = _birth_nodes[id].get_ref()
+		if not is_instance_valid(node):
+			_birth_nodes.erase(id)
+			continue
+		var remaining = _read(node, "_current_time_before_spawn", 0)
+		var sprite = node.get_node_or_null("Sprite")
+		if node.is_inside_tree() and node.is_visible_in_tree() and typeof(remaining) in [TYPE_INT, TYPE_REAL] and remaining > 0 and sprite is CanvasItem and sprite.is_visible_in_tree():
+			result.append(node)
+	return result
+
+func _nearest_entities(nodes, origin, limit, detail = "", boss_ids = {}):
 	var ranked = []
 	for node in nodes:
 		if not is_instance_valid(node) or not node is Node2D or not node.is_inside_tree() or _read(node, "dead", false):
@@ -275,8 +317,48 @@ func _nearest_entities(nodes, origin, limit):
 	ranked.sort_custom(self, "_closer")
 	var result = []
 	for index in range(min(limit, ranked.size())):
-		result.append(_entity(ranked[index].node))
+		var node = ranked[index].node
+		var entity = _entity(node)
+		if detail != "":
+			_add_entity_detail(entity, node, detail, boss_ids)
+		result.append(entity)
 	return result
+
+func _add_entity_detail(entity, node, kind, boss_ids):
+	var script = node.get_script()
+	entity["source_scene"] = node.filename
+	entity["source_script"] = script.resource_path if script != null else null
+	if kind == "enemy":
+		var identity = _read(node, "enemy_id")
+		if typeof(identity) == TYPE_INT:
+			identity = Keys.hash_to_string.get(identity, null)
+		entity["type"] = identity if typeof(identity) == TYPE_STRING else null
+		entity["is_boss"] = boss_ids.has(node.get_instance_id())
+		var live = _read(node, "current_stats")
+		entity["health"] = _numeric(_read(live, "health"))
+		entity["max_health"] = _numeric(_read(_read(node, "max_stats"), "health"))
+		entity["damage"] = _numeric(_read(live, "damage"))
+		entity["attack_cooldown_s"] = _numeric(_read(node, "_current_attack_cd"))
+		var behavior = _read(node, "_current_attack_behavior")
+		var behavior_script = behavior.get_script() if typeof(behavior) == TYPE_OBJECT and is_instance_valid(behavior) else null
+		entity["attack_behavior"] = behavior_script.resource_path if behavior_script != null else null
+		entity["animation"] = _read(_read(node, "_animation_player"), "current_animation")
+		var shape = _read(_read(node, "_collision"), "shape")
+		entity["body_radius"] = _numeric(_read(shape, "radius"))
+	elif kind == "birth":
+		# Brotato decrements this countdown once per physics tick, not in seconds.
+		var ticks = _numeric(_read(node, "_current_time_before_spawn"))
+		entity["remaining_physics_ticks"] = ticks
+		entity["physics_ticks_per_second"] = Engine.iterations_per_second
+		entity["remaining_s"] = ticks / float(Engine.iterations_per_second) if ticks != null and Engine.iterations_per_second > 0 else null
+	elif kind == "projectile":
+		entity["damage"] = _numeric(_read(node, "damage"))
+	elif kind == "consumable":
+		var data = _read(node, "data", _read(node, "consumable_data"))
+		entity["type"] = _read(data, "my_id")
+
+func _numeric(value):
+	return value if _finite_number(value) else null
 
 func _closer(a, b):
 	return a.distance < b.distance

@@ -21,7 +21,9 @@ func _exit_tree():
 func _process(_delta):
 	# macOS may suppress normal draws for an occluded game window. Force only
 	# an overdue recording frame, without changing simulation speed or focus.
-	if _active and OS.get_ticks_msec() >= _next_capture_ms + _interval_ms:
+	# _next_capture_ms already includes the interval; adding it again halves
+	# the requested capture cadence when normal window draws are suppressed.
+	if _active and OS.get_ticks_msec() >= _next_capture_ms:
 		VisualServer.force_draw(false)
 
 func handle_request(request):

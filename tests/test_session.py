@@ -5,11 +5,65 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
-from brotato_agent.jev import JevResponseError
-from brotato_agent.session import Accounting, menu_decision, record_observed_setup, run_session
+from brotato_agent.jev import JevResponseError, Judgment
+from brotato_agent.session import Accounting, menu_decision, record_observed_setup, run_session, validate_continuation
 
 
 class SessionTests(unittest.TestCase):
+    def test_continuation_requires_identical_paused_game(self):
+        state = {"phase": "paused", "scene_id": 123, "wave": 15,
+                 "time_left": 31.5, "player": {"health": 40, "position": {"x": 10, "y": 20}}}
+        validate_continuation({"final_state": state}, dict(state))
+        for key, value in (("scene_id", 456), ("wave", 1), ("phase", "combat"),
+                           ("time_left", 30), ("player", {"health": 55})):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                validate_continuation({"final_state": state}, {**state, key: value})
+
+    def test_disabled_cost_limit_keeps_accounting_and_other_limits(self):
+        for cost_limit, count, outcome in ((.01, 1, "cost_limit"), (None, 2, "request_limit")):
+            with self.subTest(cost_limit=cost_limit), tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+                bridge = MagicMock()
+                bridge.observe.return_value = {"seq": 1, "phase": "upgrade", "wave": 1, "menu": {"options": {"upgrade_0": {}}}}
+                bridge.request.side_effect = lambda command, **kw: {"now_ms": 0, "started_at_ms": 0, "active": command == "record_start", "frames": 0}
+                client = MagicMock()
+                client.choose.return_value = Judgment("upgrade_0", 1, {"upgrade_0": 1}, 10, "jev", {"input_tokens": 500000, "output_tokens": 5})
+                stack.enter_context(patch("brotato_agent.session.ROOT", Path(directory)))
+                factory = stack.enter_context(patch("brotato_agent.session.BridgeClient"))
+                factory.return_value.__enter__.return_value = bridge
+                stack.enter_context(patch("brotato_agent.session.JevClient", return_value=client))
+                stack.enter_context(patch("brotato_agent.session.time.sleep"))
+                stack.enter_context(patch("builtins.print"))
+                args = SimpleNamespace(session="cost-test", seconds=60, max_calls=2, max_cost=cost_limit, port=4243)
+                result = run_session(args)
+                self.assertEqual(result["outcome"], outcome)
+                self.assertEqual(result["requests"], count)
+                self.assertAlmostEqual(result["estimated_cost_usd"], .021 * count)
+
+    def test_interrupted_request_retains_prepared_input(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            bridge = MagicMock()
+            bridge.observe.return_value = {"seq": 1, "phase": "upgrade", "wave": 1, "menu": {"options": {"upgrade_0": {}}}}
+            bridge.request.side_effect = lambda command, **kw: {"now_ms": 0, "started_at_ms": 0, "active": command == "record_start", "frames": 0}
+            client = MagicMock()
+            client.choose.side_effect = KeyboardInterrupt
+            stack.enter_context(patch("brotato_agent.session.ROOT", Path(directory)))
+            factory = stack.enter_context(patch("brotato_agent.session.BridgeClient"))
+            factory.return_value.__enter__.return_value = bridge
+            stack.enter_context(patch("brotato_agent.session.JevClient", return_value=client))
+            stack.enter_context(patch("builtins.print"))
+            args = SimpleNamespace(session="interrupt-test", seconds=60, max_calls=1, max_cost=None, port=4243)
+            result = run_session(args)
+            rows = [json.loads(line) for line in (Path(directory) / "recordings" / args.session / "decisions.jsonl").read_text().splitlines()]
+            decision = next(r for r in rows if r["event"] == "decision")
+            self.assertEqual(result["outcome"], "interrupted")
+            self.assertEqual(result["requests"], 1)
+            self.assertEqual(result["unknown_usage_requests"], 1)
+            self.assertEqual(decision["error"], "interrupted")
+            self.assertEqual(decision["decision_state"]["phase"], "upgrade")
+            self.assertEqual(set(decision["model_options"]), {"upgrade_0"})
+            self.assertFalse(decision["applied"])
+            bridge.move.assert_not_called()
+
     def test_usage_tracks_invalid_responses_and_unknown_requests_separately(self):
         accounting = Accounting()
         accounting.add_usage({"input_tokens": 1_000_000, "output_tokens": 1000}, 120)
