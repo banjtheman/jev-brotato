@@ -79,6 +79,50 @@ Danger 0, Well-Rounded, starting SMG: **cleared waves 1–9 and died on wave 10*
 
 The [baseline report](docs/full-run-01.md) records the result and limitations. This single loss does not establish a win rate. Recordings are generated locally and are not included in a fresh clone.
 
+## What's new since the first run
+
+**Richer inputs.** `--combat-profile combat-v2` adds enemy types, relative positions, velocity,
+health and attack state, spawn markers, projectile and pickup details, your build and recent
+activity, kept bounded by nearest-detail tables and crowd sectors. `--shop-profile build-v5` gives
+menus the complete shop stock, weapon classes, tiers, scaling and slot counts, plus shared guidance
+for a 20-wave build. The legal choices are unchanged; earlier profiles stay available
+(`--shop-profile baseline` is the default) so older recordings can be reproduced.
+
+**Jev moves, an LLM shops: a full win.** `--menu-llm MODEL` keeps Jev on combat movement and sends
+every shop, level-up and crate choice to an LLM through the [Codex CLI](https://github.com/openai/codex)
+(read-only sandbox, no approvals, your own config ignored). Those screens pause the game, so the LLM's
+seconds of thinking cost no health. It gets the same state, legal options and instructions a decision
+model gets, an output schema only allows a legal option id, and its plan, reason and runner-up are
+saved in `decisions.jsonl`. A late or failed answer takes no action. On its first run, with GPT-6 Astra
+at low effort, it **won all 20 waves** on Danger 0, where Jev alone reached wave 11 at best:
+[the write-up](docs/hybrid-llm-menus.md).
+
+```bash
+python -m brotato_agent run --session hybrid-01 \
+    --menu-llm gpt-6-astra --menu-effort low --shop-profile build-v5 --combat-profile combat-v2
+```
+
+This needs the Codex CLI installed and signed in; its usage is reported under `menu_llm` in
+`summary.json` and isn't priced at Jev's rate.
+
+**Other decision models.** `--backend NAME` runs the same harness with another decision model through
+[DecisionMetrics](https://github.com/banjtheman/decision-metrics): Cloudflare's Clef, Perplexity,
+OpenAI's Decisions API, Microsoft Decision-1 or a local Strands Decider server.
+
+```bash
+python -m pip install -e '.[decision-models]'
+# copy examples/providers.toml from the DecisionMetrics repo to ./providers.toml, then:
+python -m brotato_agent run --session clef-01 --backend clef --combat-profile combat-v2
+```
+
+Provider keys go in `.env` (see `.env.example`).
+
+**Long runs.** `--no-cost-limit` keeps going through the whole run while still recording estimated
+cost. `--continue-from OLD_SESSION --session NEW_SEGMENT` picks up the same paused game in a new
+segment after the runner stops, and `tools/join_brotato_recordings.py` joins the segments into one
+episode. `tools/launch_brotato.py --mute` starts the game without sound, and `--native-rerolls`
+replaces the harness's 2-shop / 1-upgrade reroll quota per wave with the game's own limits.
+
 ## How it works
 
 | Component | Responsibility |
@@ -87,6 +131,9 @@ The [baseline report](docs/full-run-01.md) records the result and limitations. T
 | [Combat policy](brotato_agent/policy.py) | Calculates movement candidates; `INSTRUCTIONS` asks Jev to choose one. |
 | [Session runner](brotato_agent/session.py) | Handles combat and menus, budgets, recording and accounting; `MENU_INSTRUCTIONS` guides build decisions. |
 | [Jev client](brotato_agent/jev.py) | Calls the typed Choice API and validates its response. |
+| [Combat](brotato_agent/combat.py) and [shop](brotato_agent/shop.py) profiles | Build the versioned inputs for `--combat-profile` and `--shop-profile`. |
+| [Menu LLM](brotato_agent/llm_menu.py) | The hybrid: routes combat to the decision model and menus to an LLM through the Codex CLI. |
+| [Other backends](brotato_agent/decision_models.py) | Runs any DecisionMetrics backend with the same legal options and checks. |
 | [Renderer](tools/render_timelapse.py) | Joins captured frames and completed decisions by recorded time. |
 
 The launcher injects the original mod ZIP for that launch. It does not edit the game's base PCK or change Workshop subscriptions. Starting Brotato normally omits this development bridge. The API key stays in Python and is removed from the game's environment.

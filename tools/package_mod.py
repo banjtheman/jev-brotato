@@ -25,7 +25,8 @@ def main(argv=None):
     license_path = ROOT/"LICENSE"
     if not license_path.is_file():
         parser.error("Missing LICENSE; use a complete source checkout")
-    for required in ("manifest.json", "mod_main.gd", "menus.gd", "recorder.gd", "extensions/player_movement_behavior.gd"):
+    for required in ("manifest.json", "mod_main.gd", "menus.gd", "recorder.gd", "reroll_budget.gd",
+                     "extensions/player_movement_behavior.gd"):
         if not (source/required).is_file():
             parser.error(f"Missing mod file: {required}")
     destination = ROOT/"dist"/(MOD_ID+".zip")

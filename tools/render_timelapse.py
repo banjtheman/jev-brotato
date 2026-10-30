@@ -16,6 +16,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import textwrap
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -102,6 +103,13 @@ class Snapshot:
     elapsed_ms: float
 
 
+def model_name(model):
+    """'gpt-6-astra' -> 'GPT-6 Astra'; other ids are shown as given."""
+    words = str(model or "").split("-")
+    if len(words) >= 2 and words[0].lower() == "gpt":
+        return f"GPT-{words[1]} " + " ".join(w.capitalize() for w in words[2:])
+    return str(model or "LLM")
+
 class Timeline:
     """A causal join: completed records are visible only at their own timestamp."""
 
@@ -138,35 +146,42 @@ class Timeline:
             if number(usage.get("output_tokens")) is not None:
                 outputs += usage["output_tokens"]
                 outputs_known = True
-            requests += int(bool(judgment) or row.get("policy") == "jev")
+            requests += int((bool(judgment) and judgment.get("source") != "forced") or row.get("policy") == "jev")
             applied += int(row.get("applied") is True)
             metrics = row.get("metrics") or {}
             totals = {
                 "input_tokens": metrics.get("input_tokens", inputs if inputs_known else None),
                 "output_tokens": metrics.get("output_tokens", outputs if outputs_known else None),
-                "requests": metrics.get("requests", requests),
+                "requests": metrics.get("model_requests", metrics.get("requests", requests)),
                 "applied_actions": metrics.get("applied_actions", applied),
                 "estimated_cost_usd": metrics.get("estimated_cost_usd"),
                 "unknown_usage_requests": metrics.get("unknown_usage_requests", 0),
+                "unknown_price_requests": metrics.get("unknown_price_requests", 0),
             }
             if number(totals["estimated_cost_usd"]) is None and number(totals["input_tokens"]) is not None:
-                input_price = number(self.metadata.get("price_usd_per_million_input_tokens"), .042)
+                input_price = number(self.metadata.get("price_usd_per_million_input_tokens"),
+                                     None if "backend" in self.metadata else .042)
                 output_price = number(self.metadata.get("price_usd_per_million_output_tokens"), 0)
-                totals["estimated_cost_usd"] = (totals["input_tokens"] * input_price +
-                                                (totals["output_tokens"] or 0) * output_price) / 1_000_000
+                if input_price is not None:
+                    totals["estimated_cost_usd"] = (totals["input_tokens"] * input_price +
+                                                    (totals["output_tokens"] or 0) * output_price) / 1_000_000
             self.cumulative.append(totals)
         self.final_metrics = dict(self.cumulative[-1]) if self.cumulative else {}
         # Summary is authoritative at the end, including usage from a request that
         # was interrupted after its response but before its decision was logged.
         for key in ("input_tokens", "output_tokens", "requests", "applied_actions",
-                    "estimated_cost_usd", "unknown_usage_requests"):
+                    "estimated_cost_usd", "unknown_usage_requests", "unknown_price_requests"):
             if number(self.summary.get(key)) is not None:
                 self.final_metrics[key] = self.summary[key]
-        self.completed_model_times = [row["elapsed_ms"] for row in self.decisions if row.get("judgment")]
+        if number(self.summary.get("model_requests")) is not None:
+            self.final_metrics["requests"] = self.summary["model_requests"]
+        self.completed_model_times = [row["elapsed_ms"] for row in self.decisions
+                                      if row.get("judgment") and row["judgment"].get("source") != "forced"]
         self.pending_windows = sorted(
             (row["decision_started_ms"], row["elapsed_ms"])
             for row in self.decisions
             if number(row.get("decision_started_ms")) is not None
+            and (row.get("judgment") or {}).get("source") != "forced"
             and 0 <= row["decision_started_ms"] < row["elapsed_ms"]
         )
         self.pending_starts = [start for start, _ in self.pending_windows]
@@ -176,6 +191,13 @@ class Timeline:
         for _, end in self.pending_windows:
             maximum = max(maximum, end)
             self.pending_ends.append(maximum)
+
+    @property
+    def provider_label(self):
+        label = str(self.metadata.get("display_name") or
+                    (self.metadata.get("backend") or {}).get("name") or "Jev").replace("_", " ")
+        menu_model = self.metadata.get("menu_model")   # hybrid runs: an LLM makes the menu decisions
+        return f"{label} + {model_name(menu_model)}" if menu_model else label
 
     def at(self, elapsed_ms):
         frame_index = bisect_right(self.frame_times, elapsed_ms) - 1
@@ -208,12 +230,12 @@ def load_font(size, bold=False, mono=False):
 
 
 class Renderer:
-    def __init__(self, timeline: Timeline, speed: float, menu_speed=None, start_ms=0):
+    def __init__(self, timeline: Timeline, speed: float, menu_speed=None, start_ms=0, pause_speed=None):
         self.timeline = timeline
         self.speed = speed
         self.menu_speed = menu_speed
         self.playback = PlaybackPlan(timeline.records, timeline.duration_ms, speed,
-                                     menu_speed=menu_speed, start_ms=start_ms)
+                                     menu_speed=menu_speed, start_ms=start_ms, pause_speed=pause_speed)
         self.fonts = {}
         self.cache = deque(maxlen=2)
 
@@ -274,9 +296,15 @@ class Renderer:
         metrics = snap.metrics
         is_fixture = self.timeline.metadata.get("fixture", False)
 
-        self.text(draw, (42, 32), "SYSTEM ONE / GAMEPLAY EXPERIMENT", 18, MUTED, mono=True)
-        self.text(draw, (40, 64), "Jev plays Brotato", 54, bold=True)
-        self.text(draw, (42, 130), self.difficulty() + "   ·   Structured state → typed choice → game input", 22, MUTED)
+        self.text(draw, (42, 32), "DECISION MODEL / GAMEPLAY EXPERIMENT", 18, MUTED, mono=True)
+        verb = "play" if " + " in self.timeline.provider_label else "plays"
+        self.text(draw, (40, 64), f"{self.timeline.provider_label} {verb} Brotato", 54, bold=True, max_width=1420)
+        profile = self.timeline.metadata.get("shop_profile")
+        context_label = self.difficulty() + (f"   ·   Shop profile: {profile}" if profile else "")
+        combat_profile = self.timeline.metadata.get("combat_profile")
+        if combat_profile:
+            context_label += f"   ·   Combat: {combat_profile}"
+        self.text(draw, (42, 130), context_label + "   ·   Structured state → typed choice → game input", 22, MUTED)
         draw.rounded_rectangle((1510, 49, 1880, 110), 30, fill=GREEN)
         current_speed = self.playback.speed_at(elapsed_ms)
         phase = observation.get("phase") or state.get("phase")
@@ -285,15 +313,27 @@ class Renderer:
         self.text(draw, (1520, 126), "SYNTHETIC FIXTURE" if is_fixture else "ACTUAL RECORDED GAMEPLAY", 17, MUTED, mono=True)
 
         # The capture is fit without cropping, preserving the entire recorded game.
-        draw.rectangle((40, 190, 1400, 955), fill="#05080b")
-        self.picture(canvas, snap.frame, (40, 190, 1360, 765))
+        picture_top = 232 if combat_profile else 190
+        if combat_profile:
+            model_state = decision.get("decision_state") or {}
+            model_player = model_state.get("player") or {}
+            input_label = f"LAST COMPLETED INPUT · Wave {model_state.get('wave', '?')} · HP {model_player.get('health', '?')}/{model_player.get('max_health', '?')} · Enemies {model_state.get('enemy_count', '?')} · Previous {model_state.get('previous_action') or 'none'}"
+            self.text(draw, (42, 169), input_label, 18, CYAN, mono=True, max_width=1340)
+            threats = model_state.get("nearby_enemies")
+            detail = "Nearest threats (type | dx,dy | velocity | HP | damage …): " + "; ".join(threats.split("; ")[:2]) if threats else "Input contains geometric movement metrics; full state and legal choices are available in the replay inspector."
+            self.text(draw, (42, 201), detail, 16, MUTED, max_width=1340)
+        draw.rectangle((40, picture_top, 1400, 955), fill="#05080b")
+        self.picture(canvas, snap.frame, (40, picture_top, 1360, 955-picture_top))
         draw = ImageDraw.Draw(canvas)
-        draw.rectangle((40, 190, 1400, 955), outline=LINE, width=2)
+        draw.rectangle((40, picture_top, 1400, 955), outline=LINE, width=2)
         if snap.frame is None:
             self.text(draw, (400, 552), "Waiting for the first recorded frame", 30, MUTED)
         if is_fixture:
             draw.rectangle((40, 912, 1400, 955), fill=BG)
             self.text(draw, (68, 922), "SYNTHETIC TEST IMAGE — NO GAMEPLAY CLAIM", 20, AMBER, mono=True)
+        if phase == "paused" and self.timeline.metadata.get("continuation_note"):
+            draw.rectangle((40, 903, 1400, 955), fill=BG)
+            self.text(draw, (68, 919), "PAUSED FOR RUNNER CONTINUATION · Cost cutoff lifted · Last captured frame shown", 20, AMBER)
 
         x = 1440
         self.panel(draw, (x, 190, 1880, 345))
@@ -316,8 +356,24 @@ class Renderer:
         self.panel(draw, (x, 363, 1880, 680))
         probabilities = judgment.get("probabilities") or {}
         truncated = len(probabilities) > 8 and not all(key in ORDER for key in probabilities)
-        self.text(draw, (x+24, 383), "CHOICE PROBABILITIES" + (" · TOP 8" if truncated else ""), 17, MUTED, mono=True)
-        if probabilities:
+        if judgment.get("source") == "llm":   # a hybrid run's menu decision: the LLM's written explanation
+            self.text(draw, (x+24, 383), f"{model_name(judgment.get('model')).upper()} · ITS EXPLANATION", 17, MUTED, mono=True)
+            y = 418
+            for label, value, colour in (("PLAN", judgment.get("plan"), CYAN), ("WHY", judgment.get("reason"), INK),
+                                         ("PASSED ON", judgment.get("runner_up"), MUTED)):
+                if not value or y > 640:
+                    continue
+                self.text(draw, (x+24, y), label, 14, colour, mono=True)
+                y += 22
+                for line in textwrap.wrap(str(value), 40)[:5]:
+                    if y > 652:
+                        break
+                    self.text(draw, (x+24, y), line, 18, colour if label != "WHY" else INK)
+                    y += 24
+                y += 8
+        else:
+            self.text(draw, (x+24, 383), "CHOICE PROBABILITIES" + (" · TOP 8" if truncated else ""), 17, MUTED, mono=True)
+        if probabilities and judgment.get("source") != "llm":
             directional = all(key in ORDER for key in probabilities)
             keys = [key for key in ORDER if key in probabilities] if directional else sorted(
                 probabilities, key=lambda key: number(probabilities[key], 0), reverse=True)[:8]
@@ -339,13 +395,13 @@ class Renderer:
                 if probability > 0:
                     draw.rounded_rectangle((bar_x, y+3, bar_x+max(2, bar_width*probability), y+17), 6, fill=fill)
                 self.text(draw, (x+354, y-2), f"{probability*100:.0f}%", 17, INK, mono=True)
-        else:
+        elif judgment.get("source") != "llm":
             self.text(draw, (x+24, 450), "No model distribution", 24, MUTED)
             self.text(draw, (x+24, 487), "available at this timestamp.", 20, MUTED)
 
         self.panel(draw, (x, 698, 1880, 955))
         latency = number(judgment.get("latency_ms"))
-        self.text(draw, (x+24, 718), "API LATENCY", 15, MUTED, mono=True)
+        self.text(draw, (x+24, 718), "DECISION LATENCY", 15, MUTED, mono=True)
         self.text(draw, (x+244, 718), "RESULTS / SEC", 15, MUTED, mono=True)
         self.text(draw, (x+24, 741), formatted(latency) + (" ms" if latency is not None else ""), 30, CYAN, bold=True)
         self.text(draw, (x+244, 741), f"{snap.results_per_second:.2f}", 30, INK, bold=True)
@@ -358,7 +414,8 @@ class Renderer:
         draw.line((x+24, 893, 1856, 893), fill=LINE, width=1)
         cost = number(metrics.get("estimated_cost_usd"))
         unknown_usage = number(metrics.get("unknown_usage_requests"), 0)
-        self.text(draw, (x+24, 909), "EST. KNOWN COST" if unknown_usage else "EST. API COST", 15, MUTED, mono=True)
+        unknown_price = number(metrics.get("unknown_price_requests"), 0)
+        self.text(draw, (x+24, 909), "EST. KNOWN COST" if unknown_usage or unknown_price else "EST. API COST", 15, MUTED, mono=True)
         self.text(draw, (x+238, 904), f"${cost:.5f}" if cost is not None else "—", 25, GREEN, bold=True)
 
         progress = min(1, max(0, elapsed_ms/self.timeline.duration_ms))
@@ -378,7 +435,9 @@ class Renderer:
         model = judgment.get("model") or self.timeline.metadata.get("model") or "Model not recorded"
         self.text(draw, (1444, 1011), model, 18, CYAN, mono=True, max_width=436)
         self.text(draw, (40, 1043), "Recorded pixels + timestamped decisions. Selected probabilities describe the last completed request, not a future action.", 15, MUTED)
-        if unknown_usage:
+        if unknown_price:
+            self.text(draw, (1444, 1043), "API price not configured", 15, AMBER)
+        elif unknown_usage:
             self.text(draw, (1444, 1043), f"Usage unknown for {unknown_usage:g} request(s)", 15, AMBER)
         return canvas
 
@@ -387,8 +446,8 @@ class Renderer:
         canvas = Image.new("RGB", (WIDTH, HEIGHT), BG)
         draw = ImageDraw.Draw(canvas)
         draw.rectangle((40, 64, 48, 1020), fill=GREEN)
-        self.text(draw, (88, 72), "JEV × BROTATO", 24, GREEN, mono=True)
-        self.text(draw, (90, 183), "OBSERVED RESULT" if outro else "A SYSTEM ONE EXPERIMENT", 19, MUTED, mono=True)
+        self.text(draw, (88, 72), f"{timeline.provider_label.upper()} × BROTATO", 24, GREEN, mono=True, max_width=1750)
+        self.text(draw, (90, 183), "OBSERVED RESULT" if outro else "A DECISION MODEL EXPERIMENT", 19, MUTED, mono=True)
         if outro:
             outcome = timeline.summary.get("outcome") or "Recording complete"
             words = {"gameover": "Game over"}.get(str(outcome), str(outcome).replace("_", " "))
@@ -403,14 +462,17 @@ class Renderer:
             self.text(draw, (415, 474), formatted(final.get("input_tokens")), 54, INK, bold=True)
             cost = number(final.get("estimated_cost_usd"))
             unknown_usage = number(final.get("unknown_usage_requests"), 0)
-            self.text(draw, (90, 589), "ESTIMATED KNOWN API COST" if unknown_usage else "ESTIMATED API COST", 18, MUTED, mono=True)
+            unknown_price = number(final.get("unknown_price_requests"), 0)
+            self.text(draw, (90, 589), "ESTIMATED KNOWN API COST" if unknown_usage or unknown_price else "ESTIMATED API COST", 18, MUTED, mono=True)
             self.text(draw, (90, 621), f"${cost:.5f}" if cost is not None else "Not recorded", 54, GREEN, bold=True)
             self.text(draw, (90, 747), f"Recorded duration {timecode(timeline.duration_ms)}", 24, MUTED, max_width=790)
             self.text(draw, (90, 791), self.playback_description(), 24, MUTED, max_width=790)
-            if unknown_usage:
+            if unknown_price:
+                self.text(draw, (90, 838), "API price was not configured; local compute is separate.", 22, AMBER)
+            elif unknown_usage:
                 self.text(draw, (90, 838), f"Usage was unavailable for {unknown_usage:g} request(s).", 22, AMBER)
         else:
-            self.text(draw, (83, 238), "Jev plays", 104, INK, bold=True)
+            self.text(draw, (83, 238), f"{timeline.provider_label} {'play' if ' + ' in timeline.provider_label else 'plays'}", 104, INK, bold=True, max_width=810)
             self.text(draw, (83, 354), "Brotato.", 104, GREEN, bold=True)
             self.text(draw, (90, 523), "Render test. Synthetic data." if timeline.metadata.get("fixture") else "Real game. Typed decisions.", 33, INK)
             self.text(draw, (90, 588), self.difficulty() + "  /  " + self.playback_description(), 27, MUTED)
@@ -422,7 +484,8 @@ class Renderer:
         draw = ImageDraw.Draw(canvas)
         caption = "SYNTHETIC TEST FIXTURE — NOT GAMEPLAY" if timeline.metadata.get("fixture") else "FINAL RECORDED FRAME" if outro else "ACTUAL GAME CAPTURE"
         self.text(draw, (951, 774), caption, 16, MUTED, mono=True)
-        self.text(draw, (90, 943), "TYPESAFE / SYSTEM ONE", 19, MUTED, mono=True)
+        deployment = (timeline.metadata.get("backend") or {}).get("deployment") or "TYPESAFE / SYSTEM ONE"
+        self.text(draw, (90, 943), deployment, 19, MUTED, mono=True, max_width=1750)
         self.text(draw, (951, 943), "COSTS ARE ESTIMATES FROM RECORDED TOKEN USAGE", 16, MUTED, mono=True)
         return canvas
 
@@ -475,9 +538,10 @@ def encode(renderer, output, fps, intro_seconds, outro_seconds, ffmpeg, max_seco
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("session", type=Path, help="Directory with metadata.json, frames.jsonl and decisions.jsonl")
-    parser.add_argument("--output", type=Path, help="Default: SESSION/jev-brotato-timelapse.mp4")
+    parser.add_argument("--output", type=Path, help="Default: SESSION/MODEL-brotato-timelapse.mp4")
     parser.add_argument("--speed", type=float, default=4, help="Footage speed multiplier (default: 4)")
     parser.add_argument("--menu-speed", type=float, help="Playback speed for shops, upgrades, crates and other menu/result phases")
+    parser.add_argument("--pause-speed", type=float, help="Playback speed for recorded pauses; original timestamps and gaps are retained")
     parser.add_argument("--start-at", type=float, default=0, help="Start at this recorded elapsed second, before speed changes (default: 0)")
     parser.add_argument("--fps", type=int, default=24)
     parser.add_argument("--intro", type=float, default=3, help="Intro duration in seconds")
@@ -488,6 +552,7 @@ def main():
     args = parser.parse_args()
     if (not math.isfinite(args.speed) or args.speed <= 0 or not 1 <= args.fps <= 60 or
             (args.menu_speed is not None and (not math.isfinite(args.menu_speed) or args.menu_speed <= 0)) or
+            (args.pause_speed is not None and (not math.isfinite(args.pause_speed) or args.pause_speed <= 0)) or
             not math.isfinite(args.start_at) or args.start_at < 0 or
             any(not math.isfinite(value) or value < 0 for value in (args.intro, args.outro)) or
             (args.poster_at is not None and (not math.isfinite(args.poster_at) or args.poster_at < 0)) or
@@ -495,8 +560,9 @@ def main():
         parser.error("speed and video limits must be positive; card/poster times nonnegative; fps must be 1–60")
     try:
         timeline = Timeline(args.session.resolve())
-        renderer = Renderer(timeline, args.speed, menu_speed=args.menu_speed, start_ms=args.start_at*1000)
-        output = args.output.resolve() if args.output else timeline.session / "jev-brotato-timelapse.mp4"
+        renderer = Renderer(timeline, args.speed, menu_speed=args.menu_speed, start_ms=args.start_at*1000, pause_speed=args.pause_speed)
+        model_slug = "".join(c if c.isalnum() or c in "-_" else "-" for c in timeline.provider_label.lower())
+        output = args.output.resolve() if args.output else timeline.session / f"{model_slug}-brotato-timelapse.mp4"
         output.parent.mkdir(parents=True, exist_ok=True)
         poster_time = (args.poster_at*1000 if args.poster_at is not None else
                        min(timeline.duration_ms, timeline.decision_times[len(timeline.decision_times)//2])
@@ -511,7 +577,7 @@ def main():
             parser.error("ffmpeg was not found on PATH; poster was generated")
         duration = encode(renderer, output, args.fps, args.intro, args.outro, ffmpeg, args.max_video_seconds)
         edit = {"source_start_seconds": args.start_at, "combat_speed": args.speed,
-                "menu_speed": args.menu_speed, "intro_seconds": args.intro,
+                "menu_speed": args.menu_speed, "pause_speed": args.pause_speed, "intro_seconds": args.intro,
                 "outro_seconds": args.outro, "video_seconds": round(duration, 3),
                 "segments": [asdict(segment) for segment in renderer.playback.segments]}
         output.with_suffix(".edit.json").write_text(json.dumps(edit, indent=2) + "\n")

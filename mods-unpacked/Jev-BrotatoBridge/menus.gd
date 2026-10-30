@@ -6,7 +6,7 @@ var _bridge
 var _targets = {}
 var _strip_tags = RegEx.new()
 var _stat_icons = RegEx.new()
-var _rerolls_by_wave = {}
+var _rerolls = preload("res://mods-unpacked/Jev-BrotatoBridge/reroll_budget.gd").new()
 
 func _ready():
 	_bridge = get_parent()
@@ -43,13 +43,15 @@ func phase(scene, player):
 func snapshot(scene):
 	_targets.clear()
 	var current_phase = phase(scene, _bridge._player(scene))
+	observe_run_boundary(current_phase, RunData.current_wave, scene.get_instance_id() if is_instance_valid(scene) else 0)
 	var options = {}
-	var details = {"phase": current_phase, "options": options, "status": "waiting", "reason": "wave_transition"}
+	var details = {"phase": current_phase, "options": options, "status": "waiting", "reason": "wave_transition",
+		"reroll_budget": _rerolls.snapshot(RunData.current_wave)}
 	if current_phase in ["gameover", "victory"]:
 		details.status = "terminal"
 		details.reason = current_phase
 	elif current_phase == "shop":
-		_shop_options(scene, options)
+		details["shop"] = _shop_options(scene, options)
 	elif current_phase in ["upgrade", "crate"]:
 		_upgrade_options(scene, current_phase, options)
 	elif current_phase == "paused":
@@ -69,8 +71,11 @@ func snapshot(scene):
 		identity.append([key, target.node.get_instance_id(), target.identity])
 	var wave = RunData.current_wave
 	var gold = RunData.get_player_gold(0) if RunData.get_player_count() > 0 else 0
-	details["fingerprint"] = JSON.print([current_phase, scene.get_instance_id() if is_instance_valid(scene) else 0, wave, gold, options, identity]).md5_text()
+	details["fingerprint"] = JSON.print([current_phase, scene.get_instance_id() if is_instance_valid(scene) else 0, wave, gold, options, details.get("shop"), identity]).md5_text()
 	return details
+
+func observe_run_boundary(current_phase, wave, scene_id):
+	_rerolls.observe(current_phase, wave, scene_id)
 
 func execute(action):
 	if not _targets.has(action):
@@ -80,8 +85,8 @@ func execute(action):
 		return false
 	# Snapshot is rebuilt and its fingerprint checked immediately before this call.
 	if target.kind == "reroll":
-		var wave_key = str(RunData.current_wave) + ":" + target.scope
-		_rerolls_by_wave[wave_key] = _rerolls_by_wave.get(wave_key, 0) + 1
+		if not _rerolls.consume(RunData.current_wave, target.scope):
+			return false
 	target.node.callv(target.method, target.args)
 	_targets.clear()
 	return true
@@ -99,6 +104,8 @@ func build_state():
 	result.level = _read(RunData.players_data[0], "current_level", 0)
 	result["health"] = RunData.get_player_current_health(0)
 	result["max_health"] = RunData.get_player_max_health(0)
+	result["weapon_slots"] = {"used": RunData.get_player_weapons(0).size(), "free": RunData.get_free_weapon_slots(0)}
+	result["weapon_classes"] = _weapon_classes(RunData.get_player_weapons(0))
 	for weapon in RunData.get_player_weapons(0):
 		result.weapons.append(_item(weapon))
 	# Group identical owned items, preserving counts and concrete effects.
@@ -118,16 +125,17 @@ func build_state():
 	return result
 
 func _shop_options(shop, options):
+	var details = {"offers": {}, "weapon_class_rules": {}, "reroll_cost": null}
 	if RunData.get_player_count() != 1:
-		return
+		return details
 	var container = shop._get_shop_items_container(0)
 	if not is_instance_valid(container):
-		return
+		return details
 	var pressed = _read(shop, "_player_pressed_go_button", [false])
 	if not pressed.empty() and pressed[0]:
-		return
+		return details
 	if _read(container, "_is_delay_active", false):
-		return
+		return details
 	var items = _read(container, "_shop_items", [])
 	for index in range(items.size()):
 		var entry = items[index]
@@ -137,15 +145,26 @@ func _shop_options(shop, options):
 		if not is_instance_valid(item):
 			continue
 		var price = _read(entry, "value", 0)
-		if RunData.get_player_currency(0) < price:
-			continue
-		if item is WeaponData and not container._can_weapon_be_bought(entry):
-			continue
 		var option = _item(item)
 		option["kind"] = "buy_weapon" if item is WeaponData else "buy_item"
 		option["cost"] = price
 		option["currency"] = "max_hp" if RunData.get_player_effect_bool(Keys.hp_shop_hash, 0) else "materials"
-		_offer(options, "buy_" + str(index), option, container, "on_shop_item_buy_button_pressed", [entry], [item.get_instance_id(), entry.get_instance_id()])
+		var affordable = RunData.get_player_currency(0) >= price
+		var weapon_allowed = not item is WeaponData or container._can_weapon_be_bought(entry)
+		var offer_key = "buy_" + str(index)
+		var blocked = []
+		if not affordable:
+			blocked.append("insufficient_currency")
+		if not weapon_allowed:
+			blocked.append("native_weapon_purchase_restriction")
+		details.offers[offer_key] = {"item": option, "affordable": affordable, "buyable": affordable and weapon_allowed,
+			"blocked_by": blocked, "locked": _read(item, "is_locked", false)}
+		if item is WeaponData:
+			_class_rules(item, details.weapon_class_rules)
+		if affordable and weapon_allowed:
+			_offer(options, offer_key, option, container, "on_shop_item_buy_button_pressed", [entry], [item.get_instance_id(), entry.get_instance_id()])
+	for weapon in RunData.get_player_weapons(0):
+		_class_rules(weapon, details.weapon_class_rules)
 	var locked = RunData.get_player_effect_bool(Keys.lock_current_weapons_hash, 0)
 	if not locked:
 		var weapons = RunData.get_player_weapons(0)
@@ -164,10 +183,13 @@ func _shop_options(shop, options):
 				option["description"] = "Permanently recycle this owned weapon. " + option.description
 				_offer(options, "recycle_" + str(index), option, shop, "_on_item_discard_button_pressed", [weapon, 0], weapon.get_instance_id())
 	var prices = _read(shop, "_reroll_price", [])
-	var reroll_count = _rerolls_by_wave.get(str(RunData.current_wave) + ":shop", 0)
-	if prices.size() > 0 and reroll_count < 2 and RunData.get_player_gold(0) >= prices[0] and RunData.get_player_locked_shop_items(0).size() < ItemService.NB_SHOP_ITEMS:
-		_offer(options, "reroll", {"kind": "reroll", "name": "Reroll shop", "description": "Replace unlocked offers. At most two agent rerolls per shop.", "cost": prices[0]}, shop, "_on_RerollButton_pressed", [0], prices[0], "shop")
+	if prices.size() > 0:
+		details.reroll_cost = prices[0]
+	if prices.size() > 0 and _rerolls.allows(RunData.current_wave, "shop") and RunData.get_player_gold(0) >= prices[0] and RunData.get_player_locked_shop_items(0).size() < ItemService.NB_SHOP_ITEMS:
+		var description = "Replace unlocked offers. At most two agent rerolls per shop." if _rerolls.limit("shop") != null else "Replace unlocked offers. No additional agent reroll quota; native affordability and controls still apply."
+		_offer(options, "reroll", {"kind": "reroll", "name": "Reroll shop", "description": description, "cost": prices[0]}, shop, "_on_RerollButton_pressed", [0], prices[0], "shop")
 	_offer(options, "next_wave", {"kind": "next_wave", "name": "Start next wave", "description": "Keep the current build and enter combat.", "cost": 0}, shop, "_on_GoButton_pressed", [0], RunData.current_wave)
+	return details
 
 func _upgrade_options(scene, current_phase, options):
 	var container = _upgrade_container(scene)
@@ -202,9 +224,9 @@ func _upgrade_options(scene, current_phase, options):
 			option["cost"] = 0
 			_offer(options, "upgrade_" + str(index), option, ui, "_on_ChooseButton_pressed", [], data.get_instance_id())
 		var price = _read(container, "_reroll_price", 0)
-		var reroll_count = _rerolls_by_wave.get(str(RunData.current_wave) + ":upgrade", 0)
-		if options.size() > 1 and reroll_count < 1 and _button_enabled(_read(container, "_reroll_button")) and RunData.get_player_gold(0) >= price:
-			_offer(options, "reroll", {"kind": "reroll", "name": "Reroll upgrades", "description": "Replace all upgrade choices. At most one agent upgrade reroll per wave.", "cost": price}, container, "_on_RerollButton_pressed", [], price, "upgrade")
+		if options.size() > 1 and _rerolls.allows(RunData.current_wave, "upgrade") and _button_enabled(_read(container, "_reroll_button")) and RunData.get_player_gold(0) >= price:
+			var description = "Replace all upgrade choices. At most one agent upgrade reroll per wave." if _rerolls.limit("upgrade") != null else "Replace all upgrade choices. No additional agent reroll quota; native affordability and controls still apply."
+			_offer(options, "reroll", {"kind": "reroll", "name": "Reroll upgrades", "description": description, "cost": price}, container, "_on_RerollButton_pressed", [], price, "upgrade")
 
 func _upgrade_container(scene):
 	if not is_instance_valid(scene) or RunData.get_player_count() != 1:
@@ -237,7 +259,34 @@ func _item(data):
 	if data is WeaponData:
 		result["weapon_stats"] = _plain(data.get_weapon_stats_text(0)).substr(0, 2200)
 		result["weapon_id"] = _read(data, "weapon_id", "")
+		result["attack_type"] = "ranged" if data.type == WeaponData.Type.RANGED else "melee"
+		result["classes"] = []
+		for weapon_set in _read(data, "sets", []):
+			result.classes.append(tr(weapon_set.name))
 	return result
+
+func _weapon_classes(weapons):
+	var counts = {}
+	for weapon in weapons:
+		for weapon_set in _read(weapon, "sets", []):
+			var name = tr(weapon_set.name)
+			counts[name] = counts.get(name, 0) + 1
+	return counts
+
+func _class_rules(weapon, rules):
+	for weapon_set in _read(weapon, "sets", []):
+		var name = tr(weapon_set.name)
+		if rules.has(name):
+			continue
+		var bonuses = {}
+		var levels = _read(weapon_set, "set_bonuses", [])
+		for index in range(levels.size()):
+			var descriptions = []
+			for effect in levels[index]:
+				if is_instance_valid(effect) and effect.has_method("get_text"):
+					descriptions.append(_plain(effect.get_text(0, false)))
+			bonuses[str(index + 2)] = PoolStringArray(descriptions).join("; ")
+		rules[name] = bonuses
 
 func _plain(value):
 	var text = str(value)

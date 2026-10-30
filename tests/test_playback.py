@@ -5,6 +5,14 @@ from tools.playback import PlaybackPlan
 
 
 class PlaybackPlanTests(unittest.TestCase):
+    def test_pause_can_be_compressed_without_changing_menu_or_source_times(self):
+        rows = [{"elapsed_ms": 0, "phase": "combat"}, {"elapsed_ms": 1000, "phase": "paused"},
+                {"elapsed_ms": 101000, "phase": "shop"}, {"elapsed_ms": 103000, "phase": "combat"}]
+        plan = PlaybackPlan(rows, 107000, 4, menu_speed=1, pause_speed=100)
+        self.assertEqual([s.speed for s in plan.segments], [4, 100, 1, 4])
+        self.assertEqual(plan.at(1250), (101000, 1, "shop"))
+        self.assertEqual(plan.duration_ms, 4250)
+
     def records(self):
         return [
             {"elapsed_ms": 0, "phase": "combat"},

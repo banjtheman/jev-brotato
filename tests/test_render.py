@@ -102,6 +102,23 @@ class RenderTimelineTests(unittest.TestCase):
             self.assertEqual(picture.size, (WIDTH, HEIGHT))
             self.assertEqual(picture.mode, "RGB")
 
+    def test_forced_actions_do_not_count_as_model_throughput_or_pending_inference(self):
+        rows = [json.loads(line) for line in (self.path / "decisions.jsonl").read_text().splitlines()]
+        rows[-1]["judgment"]["source"] = "forced"
+        self.write_lines("decisions.jsonl", rows)
+        timeline = Timeline(self.path)
+        self.assertEqual(timeline.completed_model_times, [600])
+        self.assertFalse(timeline.at(900).pending)
+        self.assertEqual(timeline.at(1200).metrics["requests"], 1)
+
+    def test_new_backend_without_price_does_not_inherit_jev_rate(self):
+        self.write("metadata.json", {"capture_interval_ms": 250,
+                                     "backend": {"name": "strands-local", "deployment": "mps"},
+                                     "price_usd_per_million_input_tokens": None})
+        timeline = Timeline(self.path)
+        self.assertEqual(timeline.provider_label, "strands-local")
+        self.assertIsNone(timeline.at(1200).metrics["estimated_cost_usd"])
+
 
 if __name__ == "__main__":
     unittest.main()

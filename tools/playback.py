@@ -51,7 +51,7 @@ class PlaybackPlan:
     Records at/after ``duration_ms`` cannot add footage past the recording's end.
     """
 
-    def __init__(self, records, duration_ms, speed, menu_speed=None, start_ms=0):
+    def __init__(self, records, duration_ms, speed, menu_speed=None, start_ms=0, pause_speed=None):
         end = _finite(duration_ms, "duration_ms")
         start = _finite(start_ms, "start_ms")
         base_speed = _finite(speed, "speed")
@@ -64,6 +64,9 @@ class PlaybackPlan:
         self.source_end_ms = end
         self.speed = base_speed
         self.menu_speed = slow_speed
+        self.pause_speed = slow_speed if pause_speed is None else _finite(pause_speed, "pause_speed")
+        if self.pause_speed <= 0:
+            raise ValueError("pause_speed must be positive")
 
         events = {}
         for record in records:
@@ -100,7 +103,7 @@ class PlaybackPlan:
     def _append(self, start, end, phase):
         if end <= start:
             return
-        speed = self.menu_speed if phase in MENU_PHASES else self.speed
+        speed = self.pause_speed if phase == "paused" else self.menu_speed if phase in MENU_PHASES else self.speed
         output_start = self.duration_ms
         output_end = output_start + (end-start)/speed
         if not math.isfinite(output_end) or output_end <= output_start:

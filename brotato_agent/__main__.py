@@ -11,6 +11,8 @@ import time
 from .bridge import BridgeClient, BridgeError
 from .jev import JevClient, JevError, load_env
 from .policy import DIRECTIONS, INSTRUCTIONS, heuristic_choice, prepare_decision
+from .shop import SHOP_PROFILES
+from .combat import COMBAT_PROFILES
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -112,16 +114,46 @@ def main():
     run.add_argument("--seconds", type=float, default=60)
     run.add_argument("--max-calls", type=int, default=120)
     run.add_argument("--policy", choices=["jev", "heuristic"], default="jev")
-    session = commands.add_parser("run", help="Record a full Jev run, including supported menus, until win/death")
+    session = commands.add_parser("run", help="Record a full model run, including supported menus, until win/death")
     session.add_argument("--session", help="Recording folder name (letters, digits, dash, underscore)")
     session.add_argument("--seconds", type=float, default=2400)
     session.add_argument("--max-calls", type=int, default=6000)
+    session.add_argument("--capture-interval-ms", type=int, default=250,
+                         help="Replay screenshot interval, 100–2000ms; independent of model observation cadence")
     session.add_argument("--max-cost", type=float, default=.50, help="Stop at this estimated known input-token cost in USD")
+    session.add_argument("--no-cost-limit", action="store_true",
+                         help="Continue through death/victory without a cost cutoff; still record estimated cost")
+    session.add_argument("--continue-from", help="Continue the same paused game from this recording, in a new segment")
+    session.add_argument("--backend", help="DecisionMetrics backend name; omit for the original Jev client")
+    session.add_argument("--backend-config", type=Path, default=ROOT/"providers.toml",
+                         help="DecisionMetrics provider file (start from its examples/providers.toml)")
+    session.add_argument("--timing", choices=["native", "shared"],
+                         help="Native deployment speed or shared 200ms combat cadence")
+    session.add_argument("--max-rate", type=float, default=20,
+                         help="Native timing combat request ceiling in Hz (default 20)")
+    session.add_argument("--menu-llm", metavar="MODEL",
+                         help="Hybrid: Jev keeps combat; this LLM (through the Codex CLI) makes shop, level-up and crate choices, e.g. gpt-6-astra")
+    session.add_argument("--menu-effort", default="low", choices=["minimal", "low", "medium", "high"],
+                         help="Reasoning effort for --menu-llm")
+    session.add_argument("--codex-bin", default="codex")
+    session.add_argument("--shop-profile", choices=SHOP_PROFILES, default="baseline",
+                         help="Versioned menu inputs; build-v5 adds complete build/stock facts with compact JSON encoding")
+    session.add_argument("--combat-profile", choices=COMBAT_PROFILES, default="baseline",
+                         help="Original geometry or richer enemy, spawn, pickup, build, and recent-activity inputs")
     args = parser.parse_args()
+    if getattr(args, "backend", None) and not args.backend_config.is_file():
+        parser.error(f"--backend needs a provider file: copy examples/providers.toml from "
+                     f"https://github.com/banjtheman/decision-metrics to {args.backend_config}")
     if args.command in ("play", "run") and (not math.isfinite(args.seconds) or args.seconds <= 0 or args.max_calls <= 0):
         parser.error("seconds and max-calls must be positive, finite limits")
     if args.command == "run" and (not math.isfinite(args.max_cost) or args.max_cost <= 0):
         parser.error("max-cost must be positive and finite")
+    if args.command == "run" and args.no_cost_limit:
+        args.max_cost = None
+    if args.command == "run" and (not math.isfinite(args.max_rate) or not 0 < args.max_rate <= 40):
+        parser.error("max-rate must be finite and in (0, 40]")
+    if args.command == "run" and not 100 <= args.capture_interval_ms <= 2000:
+        parser.error("capture-interval-ms must be between 100 and 2000")
     try:
         if args.command in ("demo", "play", "run"):
             load_env(args.env)
